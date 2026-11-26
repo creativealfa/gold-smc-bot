@@ -134,7 +134,6 @@ for i in range(lookback + 3, len(df)):
         setup = {"idx": i, "timestamp": ts, "time_str": ts.strftime("%m-%d %H:%M"), "side": "BUY", "marker_y": float(c3["Low"]) - 1.3, "entry": entry, "sl": sl, "tp": tp, "cords": cords}
 
     if setup is not None:
-        # Simulate forward candles to record actual WIN, LOSS, OPEN, or PENDING outcome
         future_bars = df.iloc[i + 1 :]
         outcome = "PENDING"
         filled = False
@@ -142,17 +141,16 @@ for i in range(lookback + 3, len(df)):
         lesson_note = "Waiting for limit fill"
 
         for _, fbar in future_bars.iterrows():
-            if not filled:
-                if fbar["Low"] <= setup["entry"] <= fbar["High"]:
-                    filled = True
-                    outcome = "OPEN"
-                    lesson_note = "Trade active - monitoring TP/SL"
+            if not filled and fbar["Low"] <= setup["entry"] <= fbar["High"]:
+                filled = True
+                outcome = "OPEN"
+                lesson_note = "Trade active - monitoring TP/SL"
             if filled:
                 if setup["side"] == "BUY":
                     if fbar["Low"] <= setup["sl"]:
                         outcome = "LOSS"
                         pnl_r = -1.0
-                        missed = [k.split("] ")[1] for k, v in setup["cords"].items() if not v]
+                        missed = [k.split("] ") for k, v in setup["cords"].items() if not v]
                         lesson_note = "Mistake: Missing " + (", ".join(missed[:2]) if missed else "momentum follow-through")
                         break
                     elif fbar["High"] >= setup["tp"]:
@@ -164,7 +162,7 @@ for i in range(lookback + 3, len(df)):
                     if fbar["High"] >= setup["sl"]:
                         outcome = "LOSS"
                         pnl_r = -1.0
-                        missed = [k.split("] ")[1] for k, v in setup["cords"].items() if not v]
+                        missed = [k.split("] ") for k, v in setup["cords"].items() if not v]
                         lesson_note = "Mistake: Missing " + (", ".join(missed[:2]) if missed else "momentum follow-through")
                         break
                     elif fbar["Low"] <= setup["tp"]:
@@ -178,19 +176,13 @@ for i in range(lookback + 3, len(df)):
         setup["lesson"] = lesson_note
         raw_trades.append(setup)
 
-# 4. Self-Learning Weight Adjustment Engine (Learns from Journal Wins vs Losses)
-cord_names = list(raw_trades[0]["cords"].keys()) if raw_trades else []
-cord_weights = {c: 1.0 for c in cord_names}
+# 4. Self-Learning Weight Adjustment Engine (Paste-Safe Single-Line Comprehensions)
+cord_names = list(raw_trades["cords"].keys()) if raw_trades else []
 closed_trades = [t for t in raw_trades if t["outcome"] in ("WIN", "LOSS")]
 wins_list = [t for t in closed_trades if t["outcome"] == "WIN"]
 losses_list = [t for t in closed_trades if t["outcome"] == "LOSS"]
 
-top_mistake_cord = "None yet"
-best_winning_cord = "None yet"
-
-if len(closed_trades) >= 2 and cord_names:
-    mistake_scores = {}
-    win_scores = {}
-    for c in cord_names:
-        # How often was this cord MISSING during losses?
+mistake_scores = {c: (float(np.mean([not t["cords"][c] for t in losses_list])) if losses_list else 0.0) for c in cord_names}
+win_scores = {c: (float(np.mean([t["cords"][c] for t in wins_list])) if wins_list else 0.5) for c in cord_names}
+cord_weights = {c: (round(float(np.clip(0.8 + win_scores[c] + (mistake_scores[c] * 0.5), 0.5, 1.8)), 2) if len(closed_trades) >= 2 else 1.0) for c in cord_names}
 

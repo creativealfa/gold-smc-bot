@@ -14,15 +14,23 @@ default_key = st.secrets.get("TWELVE_DATA_API_KEY", "").strip() if hasattr(st, "
 def fetch_gold_series(api_key: str, symbol: str) -> tuple[pd.DataFrame, str]:
     if not api_key:
         return pd.DataFrame(), "No API key provided."
-    url = (
-        f"https://twelvedata.com"
-        f"?symbol={symbol}&interval=5min&outputsize=180"
-        f"&timezone=Africa/Nairobi&apikey={api_key}"
-    )
+    # Build endpoint cleanly so copy-paste never strips subdomains or paths
+    base_url = "https://" + "api." + "twelvedata" + ".com" + "/time_series"
+    params = {
+        "symbol": symbol,
+        "interval": "5min",
+        "outputsize": 180,
+        "timezone": "Africa/Nairobi",
+        "apikey": api_key,
+    }
+    headers = {"User-Agent": "Mozilla/5.0"}
     try:
-        res = requests.get(url, timeout=10).json()
+        resp = requests.get(base_url, params=params, headers=headers, timeout=10)
+        if not resp.text.strip():
+            return pd.DataFrame(), f"Empty response from server (HTTP {resp.status_code})"
+        res = resp.json()
         if "values" not in res:
-            return pd.DataFrame(), res.get("message", "Unknown API response")
+            return pd.DataFrame(), res.get("message", f"API Error: {res}")
         df = pd.DataFrame(res["values"])
         df["datetime"] = pd.to_datetime(df["datetime"])
         df = df.set_index("datetime").sort_index()
@@ -32,7 +40,7 @@ def fetch_gold_series(api_key: str, symbol: str) -> tuple[pd.DataFrame, str]:
         df.rename(columns={"open": "Open", "high": "High", "low": "Low", "close": "Close"}, inplace=True)
         return df, "OK"
     except Exception as e:
-        return pd.DataFrame(), str(e)
+        return pd.DataFrame(), f"Request failed: {e}"
 
 def scan_overlap_signal(df: pd.DataFrame, l_high: float, l_low: float, target_date, buf: float, rr: float):
     ov = df[df.index.date == target_date].between_time("15:00", "18:59")
@@ -82,7 +90,6 @@ else:
 
 if df.empty:
     st.error(f"Could not load market data: {status_msg}")
-    st.info("Double-check that your Twelve Data API key has no extra spaces and click 'Refresh Data Now' in the sidebar.")
     st.stop()
 
 latest_date = df.index[-1].date()

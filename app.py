@@ -1,3 +1,4 @@
+
 import streamlit as st
 import pandas as pd
 import numpy as np
@@ -79,7 +80,6 @@ def engineer_unified_features(df: pd.DataFrame) -> pd.DataFrame:
     return d
 
 def learn_historical_winrate(df: pd.DataFrame, side: str, in_killzone: bool, trend_aligned: bool) -> int:
-    """Self-calibrating Bayesian win-rate learner over the loaded historical candles."""
     if len(df) < 30:
         return 68
     fut_hi = pd.concat([df["High"].shift(-k) for k in range(1, 10)], axis=1).max(axis=1).iloc[:-10]
@@ -165,4 +165,5 @@ def analyze_10cord_setups(df: pd.DataFrame, bp: dict, lookback: int, buf: float,
 
     return signals
 
-with st.sidebar:
+# Flat Sidebar Controls (Zero Indentation Risks)
+st.sidebar.header("10-Cord Blueprint AI")

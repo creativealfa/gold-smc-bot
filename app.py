@@ -20,14 +20,15 @@ try:
 except Exception:
     saved_key = ""
 
-c_key, c_feed, c_tf, c_conf = st.columns(4)
+exp = st.expander("Terminal Settings & Timeframe", expanded=(not bool(saved_key)))
+c_key, c_feed, c_tf, c_conf = exp.columns(4)
 api_key = c_key.text_input("Twelve Data API Key", value=saved_key, type="password", placeholder="Paste API key...").strip()
 symbol_feed = c_feed.selectbox("Gold Feed", ["PAXG/USD", "XAU/USD"], index=0)
 timeframe = c_tf.selectbox("Timeframe", ["5min", "1min", "15min"], index=0)
 min_conf = c_conf.slider("Min AI Confidence %", 40, 85, 50)
 
 if not api_key:
-    st.warning("Paste your Twelve Data API Key in the box above to load the live Gold chart.")
+    st.warning("Paste your Twelve Data API Key in the settings box above to load the live Gold chart.")
     st.stop()
 
 @st.cache_data(ttl=180)
@@ -170,4 +171,3 @@ def analyze_10cord_setups(df: pd.DataFrame, bp: dict, min_conf_val: int) -> list
             if final_conf >= min_conf_val:
                 entry = round((c1["High"] + c3["Low"]) / 2, 2)
                 sl = round(bottom - 0.80, 2)
-                tp = round(entry + max(entry - sl, 0.50) * rr, 2)

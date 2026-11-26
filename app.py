@@ -9,7 +9,6 @@ from zoneinfo import ZoneInfo
 st.set_page_config(page_title="XAU/USD AI Desk", page_icon="🪙", layout="wide", initial_sidebar_state="collapsed")
 EAT = ZoneInfo("Africa/Nairobi")
 
-# Custom Institutional Dark CSS (Hides clutter & styles KPI cards)
 st.markdown("""
 <style>
 #MainMenu, footer, header {visibility: hidden;}
@@ -28,7 +27,6 @@ try:
 except Exception:
     saved_key = ""
 
-# Settings tucked neatly inside the collapsible sidebar (>)
 st.sidebar.header("Desk Settings")
 api_key = st.sidebar.text_input("Twelve Data API Key", value=saved_key, type="password").strip()
 symbol = st.sidebar.selectbox("Gold Feed", ["PAXG/USD", "XAU/USD"], index=0)
@@ -36,9 +34,8 @@ tf = st.sidebar.selectbox("Timeframe", ["15min", "5min"], index=0)
 killzone_only = st.sidebar.checkbox("Killzones Only (10-14 & 15-20 EAT)", value=True)
 rr_target = st.sidebar.slider("Reward-to-Risk Ratio", 1.5, 3.0, 1.8, step=0.1)
 
-# Clean Front-Page Header + Instant Refresh Button
-h_left, h_right = st.columns([5, 1])
-h_left.markdown(f"### 🪙 XAU/USD Institutional AI Desk")
+h_left, h_right = st.columns([4, 1])
+h_left.markdown("### 🪙 XAU/USD Institutional AI Desk")
 h_left.caption(f"Live Order Flow & Pullback Execution • Nairobi Time: **{datetime.now(EAT).strftime('%H:%M EAT')}**")
 if h_right.button("🔄 Refresh", use_container_width=True):
     st.cache_data.clear()
@@ -71,7 +68,6 @@ if df.empty:
     st.error(f"Feed Notice ({symbol}): {status}")
     st.stop()
 
-# Indicators & Order Flow Engine
 df["ema50"] = df["Close"].ewm(span=50, adjust=False).mean()
 df["ema100"] = df["Close"].ewm(span=100, adjust=False).mean()
 tr = pd.concat([df["High"] - df["Low"], (df["High"] - df["Close"].shift()).abs(), (df["Low"] - df["Close"].shift()).abs()], axis=1).max(axis=1)
@@ -98,7 +94,6 @@ df["trend_dir"] = trend_dir
 rng = (df["High"] - df["Low"]).replace(0, 0.01)
 df["net_delta"] = ((df["Close"] - df["Low"]) - (df["High"] - df["Close"])) / rng
 
-# Pullback Scanner & Journal Grading
 journal = []
 cooldown = 0
 
@@ -158,22 +153,22 @@ win_rate = int((wins / closed_n) * 100) if closed_n else 0
 net_r = sum(t["pnl"] for t in journal)
 live_px = float(df["Close"].iloc[-1])
 
-# 1. KPI Summary Row
 k1, k2, k3, k4 = st.columns(4)
 k1.metric(f"Live {symbol} ({tf})", f"${live_px:,.2f}")
 k2.metric("Journal Win Rate", f"{win_rate}%", delta=f"{wins}W - {losses}L")
 k3.metric("Net Performance", f"{net_r:+.1f}R", delta=f"{closed_n} Closed")
 k4.metric("Latest Signal", f"{journal[-1]['side']} LIMIT" if journal else "SCANNING", delta=journal[-1]["result"] if journal else "Killzone Wait")
 
-# 2. Active Signal Card
 if journal:
     last = journal[-1]
     sig_line = f"**ACTIVE SIGNAL ({last['time']} EAT):** **{last['side']} LIMIT** `[{last['result']}]`  |  Entry: **${last['entry']}**  •  SL: **${last['sl']}**  •  TP: **${last['tp']}**"
-    st.success(sig_line) if last["side"] == "BUY" else st.error(sig_line)
+    if last["side"] == "BUY":
+        st.success(sig_line)
+    else:
+        st.error(sig_line)
 else:
     st.info("No active Killzone pullback setup in the current window. Scanning live candles...")
 
-# 3. Clean Institutional Candlestick Chart
 fig = go.Figure()
 fig.add_trace(go.Candlestick(x=df.index, open=df["Open"], high=df["High"], low=df["Low"], close=df["Close"], name=symbol, increasing_line_color="#10b981", decreasing_line_color="#ef4444"))
 fig.add_trace(go.Scatter(x=df.index, y=df["ema50"], mode="lines", name="50 EMA", line=dict(color="#38bdf8", width=1.4)))
@@ -193,7 +188,6 @@ if journal:
 fig.update_layout(template="plotly_dark", paper_bgcolor="#0b0f19", plot_bgcolor="#0b0f19", height=480, margin=dict(l=8, r=8, t=20, b=8), xaxis_rangeslider_visible=False, legend=dict(orientation="h", yanchor="bottom", y=1.01, xanchor="right", x=1))
 st.plotly_chart(fig, use_container_width=True)
 
-# 4. Clean Automated Trade Journal
 if journal:
     st.markdown("#### Automated Trade Journal")
     j_df = pd.DataFrame([{"Time (EAT)": t["time"], "Signal": f"{t['side']} LIMIT", "Status": t["result"], "Return": f"{t['pnl']:+.1f}R", "Limit Entry": f"${t['entry']}", "Stop Loss": f"${t['sl']}", "Take Profit": f"${t['tp']}"} for t in reversed(journal)])

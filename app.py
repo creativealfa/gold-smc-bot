@@ -1,4 +1,3 @@
-
 import streamlit as st
 import pandas as pd
 import numpy as np
@@ -16,14 +15,14 @@ now_eat = datetime.now(EAT_TZ)
 st.title("Gold 10-Cord AI & Market Blueprint Terminal")
 st.caption(f"Order-Book Heatmap + CRT + ICT + SMC + Trend | Nairobi Time: {now_eat.strftime('%H:%M EAT')}")
 
-@st.cache_data(ttl=60)
+@st.cache_data(ttl=180)
 def fetch_gold_series(api_key: str, symbol: str, interval: str) -> tuple[pd.DataFrame, str]:
     if not api_key:
         return pd.DataFrame(), "No API key provided."
     base_url = "https://" + "api." + "twelvedata" + ".com" + "/time_series"
-    params = {"symbol": symbol, "interval": interval, "outputsize": 250, "timezone": "Africa/Nairobi", "apikey": api_key}
+    params = {"symbol": symbol, "interval": interval, "outputsize": 180, "timezone": "Africa/Nairobi", "apikey": api_key}
     try:
-        resp = requests.get(base_url, params=params, headers={"User-Agent": "Mozilla/5.0"}, timeout=10)
+        resp = requests.get(base_url, params=params, headers={"User-Agent": "Mozilla/5.0"}, timeout=8)
         res = resp.json()
         if "values" not in res:
             return pd.DataFrame(), res.get("message", "Unknown API response")
@@ -40,15 +39,18 @@ def fetch_gold_series(api_key: str, symbol: str, interval: str) -> tuple[pd.Data
 
 def build_market_blueprint(df: pd.DataFrame) -> dict:
     p_min, p_max = float(df["Low"].min()), float(df["High"].max())
-    bins = np.linspace(p_min, p_max, 36)
+    bins = np.linspace(p_min, p_max, 30)
     bin_centers = (bins[:-1] + bins[1:]) / 2
     order_density = np.zeros(len(bin_centers))
 
-    for _, row in df.iterrows():
-        rng = max(row["High"] - row["Low"], 0.10)
-        wick_weight = 1.0 + ((rng - abs(row["Close"] - row["Open"])) / rng) * 2.0
-        mask = (bin_centers >= row["Low"]) & (bin_centers <= row["High"])
-        order_density[mask] += wick_weight
+    lows_arr = df["Low"].to_numpy()
+    highs_arr = df["High"].to_numpy()
+    bodies_arr = np.abs(df["Close"].to_numpy() - df["Open"].to_numpy())
+
+    for lo, hi, body in zip(lows_arr, highs_arr, bodies_arr):
+        rng = max(hi - lo, 0.10)
+        wick_weight = 1.0 + ((rng - body) / rng) * 2.0
+        order_density[(bin_centers >= lo) & (bin_centers <= hi)] += wick_weight
 
     for idx, price in enumerate(bin_centers):
         if abs(price % 50) < 1.5 or abs(price % 25) < 1.0:
@@ -70,7 +72,8 @@ def engineer_unified_features(df: pd.DataFrame) -> pd.DataFrame:
     d = df.copy()
     d["ema20"] = d["Close"].ewm(span=20, adjust=False).mean()
     d["ema50"] = d["Close"].ewm(span=50, adjust=False).mean()
-    d["trend_slope"] = d["Close"].rolling(15).apply(lambda x: np.polyfit(range(len(x)), x, 1), raw=True).fillna(0)
+    # Instant vectorized trend slope (replaces slow polyfit loop)
+    d["trend_slope"] = d["ema20"].diff(5).fillna(0)
     tr = pd.concat([d["High"] - d["Low"], (d["High"] - d["Close"].shift()).abs(), (d["Low"] - d["Close"].shift()).abs()], axis=1).max(axis=1)
     d["atr"] = tr.rolling(14).mean().bfill()
     d["body_atr"] = (d["Close"] - d["Open"]).abs() / d["atr"].replace(0, 1)
@@ -82,9 +85,9 @@ def engineer_unified_features(df: pd.DataFrame) -> pd.DataFrame:
 def learn_historical_winrate(df: pd.DataFrame, side: str, in_killzone: bool, trend_aligned: bool) -> int:
     if len(df) < 30:
         return 68
-    fut_hi = pd.concat([df["High"].shift(-k) for k in range(1, 10)], axis=1).max(axis=1).iloc[:-10]
-    fut_lo = pd.concat([df["Low"].shift(-k) for k in range(1, 10)], axis=1).min(axis=1).iloc[:-10]
-    base = df.iloc[:-10]
+    fut_hi = df["High"].rolling(8).max().shift(-8).iloc[:-8]
+    fut_lo = df["Low"].rolling(8).min().shift(-8).iloc[:-8]
+    base = df.iloc[:-8]
     if side == "BUY":
         wins = ((fut_hi - base["Close"]) > (base["atr"] * 1.1)).mean()
     else:
@@ -165,5 +168,5 @@ def analyze_10cord_setups(df: pd.DataFrame, bp: dict, lookback: int, buf: float,
 
     return signals
 
-# Flat Sidebar Controls (Zero Indentation Risks)
 st.sidebar.header("10-Cord Blueprint AI")
+

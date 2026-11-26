@@ -7,7 +7,7 @@ from datetime import datetime
 from zoneinfo import ZoneInfo
 from sklearn.ensemble import RandomForestClassifier
 
-st.set_page_config(page_title="Gold AI SMC Terminal", page_icon="🧠", layout="wide", initial_sidebar_state="collapsed")
+st.set_page_config(page_title="Gold AI SMC Terminal", page_icon="📈", layout="wide", initial_sidebar_state="collapsed")
 EAT_TZ = ZoneInfo("Africa/Nairobi")
 default_key = st.secrets.get("TWELVE_DATA_API_KEY", "").strip() if hasattr(st, "secrets") else ""
 
@@ -34,28 +34,16 @@ def fetch_gold_series(api_key: str, symbol: str, interval: str) -> tuple[pd.Data
         return pd.DataFrame(), str(e)
 
 def engineer_features(df: pd.DataFrame) -> pd.DataFrame:
-    """Computes institutional technical features for AI training and scoring."""
     d = df.copy()
     d["ema50"] = d["Close"].ewm(span=50, adjust=False).mean()
     d["ema_dist"] = (d["Close"] - d["ema50"]) / d["Close"]
-    
-    # 14-period ATR
-    tr = pd.concat([
-        d["High"] - d["Low"],
-        (d["High"] - d["Close"].shift()).abs(),
-        (d["Low"] - d["Close"].shift()).abs()
-    ], axis=1).max(axis=1)
+    tr = pd.concat([d["High"] - d["Low"], (d["High"] - d["Close"].shift()).abs(), (d["Low"] - d["Close"].shift()).abs()], axis=1).max(axis=1)
     d["atr"] = tr.rolling(14).mean().bfill()
     d["body_atr_ratio"] = (d["Close"] - d["Open"]).abs() / d["atr"].replace(0, 1)
-    
-    # 14-period RSI
     delta = d["Close"].diff()
     gain = delta.clip(lower=0).rolling(14).mean()
     loss = (-delta.clip(upper=0)).rolling(14).mean().replace(0, 1e-9)
-    d["rsi"] = 100 - (100 / (1 + (gain / loss)))
-    d["rsi"] = d["rsi"].fillna(50)
-    
-    # Upper & Lower wick ratios
+    d["rsi"] = (100 - (100 / (1 + (gain / loss)))).fillna(50)
     full_range = (d["High"] - d["Low"]).replace(0, 1e-9)
     d["upper_wick_ratio"] = (d["High"] - d[["Open", "Close"]].max(axis=1)) / full_range
     d["lower_wick_ratio"] = (d[["Open", "Close"]].min(axis=1) - d["Low"]) / full_range
@@ -63,50 +51,33 @@ def engineer_features(df: pd.DataFrame) -> pd.DataFrame:
     return d
 
 def train_ai_models(df: pd.DataFrame):
-    """Trains two Random Forest models on recent historical price behavior (Buy & Sell outcome probability)."""
     feature_cols = ["ema_dist", "body_atr_ratio", "rsi", "upper_wick_ratio", "lower_wick_ratio", "hour_eat"]
     train_df = df.iloc[:-12].copy()
     if len(train_df) < 60:
         return None, None, feature_cols
-
-    # Label historical bars: did price rally +1.5 ATR before dropping -1.0 ATR in next 12 bars?
     future_high = pd.concat([df["High"].shift(-k) for k in range(1, 13)], axis=1).max(axis=1).iloc[:-12]
     future_low = pd.concat([df["Low"].shift(-k) for k in range(1, 13)], axis=1).min(axis=1).iloc[:-12]
-
     y_buy = ((future_high - train_df["Close"]) > (train_df["atr"] * 1.2)).astype(int)
     y_sell = ((train_df["Close"] - future_low) > (train_df["atr"] * 1.2)).astype(int)
-
     X = train_df[feature_cols].fillna(0)
     buy_model = RandomForestClassifier(n_estimators=80, max_depth=5, random_state=42)
     sell_model = RandomForestClassifier(n_estimators=80, max_depth=5, random_state=42)
-
-    if y_buy.nunique() > 1:
-        buy_model.fit(X, y_buy)
-    else:
-        buy_model = None
-
-    if y_sell.nunique() > 1:
-        sell_model.fit(X, y_sell)
-    else:
-        sell_model = None
-
+    buy_model = buy_model.fit(X, y_buy) if y_buy.nunique() > 1 else None
+    sell_model = sell_model.fit(X, y_sell) if y_sell.nunique() > 1 else None
     return buy_model, sell_model, feature_cols
 
 def analyze_ai_scalps(df: pd.DataFrame, lookback: int, buf: float, rr: float, min_conf: int) -> list[dict]:
     df = engineer_features(df)
     buy_model, sell_model, f_cols = train_ai_models(df)
     signals = []
-
     for i in range(lookback + 2, len(df) - 1):
         prior = df.iloc[i - lookback - 2 : i - 2]
         s_high, s_low = float(prior["High"].max()), float(prior["Low"].min())
         c1, c2, c3 = df.iloc[i - 2], df.iloc[i - 1], df.iloc[i]
         ts = df.index[i]
-        hour = ts.hour
-        in_killzone = (10 <= hour <= 13) or (15 <= hour <= 19)
+        in_killzone = (10 <= ts.hour <= 13) or (15 <= ts.hour <= 19)
         X_now = pd.DataFrame([c3[f_cols].fillna(0)])
 
-        # --- CHECK SELL SETUP ---
         if ((c1["High"] > s_high + buf) or (c2["High"] > s_high + buf)) and (c3["Close"] < s_high) and (c1["Low"] > c3["High"]):
             cords = {
                 "Liquidity Sweep Confirmed": True,
@@ -119,19 +90,13 @@ def analyze_ai_scalps(df: pd.DataFrame, lookback: int, buf: float, rr: float, mi
             cord_score = sum(cords.values())
             ai_prob = int(sell_model.predict_proba(X_now)[0][1] * 100) if sell_model else 65
             final_conf = int((ai_prob * 0.5) + ((cord_score / 6) * 100 * 0.5))
-
             if final_conf >= min_conf:
                 entry = round((c1["Low"] + c3["High"]) / 2, 2)
                 sl = round(max(c1["High"], c2["High"]) + 0.80, 2)
                 tp = round(entry - max(sl - entry, 0.50) * rr, 2)
                 badge = "HIGH" if final_conf >= 75 else ("MEDIUM" if final_conf >= 60 else "LOW")
-                signals.append({
-                    "timestamp": ts, "time_str": ts.strftime("%m-%d %H:%M"), "side": "SELL",
-                    "marker_y": float(c3["High"]) + 1.3, "entry": entry, "sl": sl, "tp": tp,
-                    "confidence": final_conf, "ai_prob": ai_prob, "cords": cords, "badge": badge
-                })
+                signals.append({"timestamp": ts, "time_str": ts.strftime("%m-%d %H:%M"), "side": "SELL", "marker_y": float(c3["High"]) + 1.3, "entry": entry, "sl": sl, "tp": tp, "confidence": final_conf, "ai_prob": ai_prob, "cords": cords, "badge": badge})
 
-        # --- CHECK BUY SETUP ---
         if ((c1["Low"] < s_low - buf) or (c2["Low"] < s_low - buf)) and (c3["Close"] > s_low) and (c1["High"] < c3["Low"]):
             cords = {
                 "Liquidity Sweep Confirmed": True,
@@ -144,18 +109,12 @@ def analyze_ai_scalps(df: pd.DataFrame, lookback: int, buf: float, rr: float, mi
             cord_score = sum(cords.values())
             ai_prob = int(buy_model.predict_proba(X_now)[0][1] * 100) if buy_model else 65
             final_conf = int((ai_prob * 0.5) + ((cord_score / 6) * 100 * 0.5))
-
             if final_conf >= min_conf:
                 entry = round((c1["High"] + c3["Low"]) / 2, 2)
                 sl = round(min(c1["Low"], c2["Low"]) - 0.80, 2)
                 tp = round(entry + max(entry - sl, 0.50) * rr, 2)
                 badge = "HIGH" if final_conf >= 75 else ("MEDIUM" if final_conf >= 60 else "LOW")
-                signals.append({
-                    "timestamp": ts, "time_str": ts.strftime("%m-%d %H:%M"), "side": "BUY",
-                    "marker_y": float(c3["Low"]) - 1.3, "entry": entry, "sl": sl, "tp": tp,
-                    "confidence": final_conf, "ai_prob": ai_prob, "cords": cords, "badge": badge
-                })
-
+                signals.append({"timestamp": ts, "time_str": ts.strftime("%m-%d %H:%M"), "side": "BUY", "marker_y": float(c3["Low"]) - 1.3, "entry": entry, "sl": sl, "tp": tp, "confidence": final_conf, "ai_prob": ai_prob, "cords": cords, "badge": badge})
     return signals
 
 with st.sidebar:
@@ -189,7 +148,6 @@ if df.empty:
 signals = analyze_ai_scalps(df, lookback, buf, rr, min_conf)
 current_price = float(df["Close"].iloc[-1])
 
-# Top Metrics Row
 m1, m2, m3, m4 = st.columns(4)
 m1.metric(f"Live {active_symbol}", f"${current_price:,.2f}")
 if signals:
@@ -202,10 +160,20 @@ else:
     m3.metric("AI Confidence Score", "Waiting")
     m4.metric("Active Filter", f">= {min_conf}% Conf.")
 
-# AI Clear Communication & Confluence Badge Panel
 if signals:
     last = signals[-1]
     passed = [k for k, v in last["cords"].items() if v]
-    failed = [k for k, v in last["cords"].items() if not v]
-    summary_text = (
-        f"**AI Analyst Summary ({last['time_str']} EAT):** The Random Forest model detected a **{last['side']}** setup "
+    summary_text = f"**AI Analyst Summary ({last['time_str']} EAT):** Detected a **{last['side']}** setup with **{last['confidence']}% confidence** (ML Win Probability: {last['ai_prob']}%, Cords Passed: {len(passed)}/6). Limit Entry: **${last['entry']}** | SL: **${last['sl']}** | TP: **${last['tp']}**."
+    if last["badge"] == "HIGH":
+        st.success(summary_text)
+    else:
+        st.warning(summary_text)
+    with st.expander("View 6-Cord Confluence Badge Breakdown", expanded=True):
+        cols = st.columns(3)
+        for idx, (cord_name, ok) in enumerate(last["cords"].items()):
+            icon = "✅" if ok else "⚠️"
+            cols[idx % 3].markdown(f"{icon} **{cord_name}**")
+else:
+    st.info(f"AI Model trained on {len(df)} candles. Waiting for a sweep + FVG setup meeting your **{min_conf}%** confidence filter.")
+
+fig = go.Figure(data=[go.Candlestick(x=df.index, open=df["Open"], high=df["High"], low=df["Low"], close=df["Close"], name=active_symbol)])

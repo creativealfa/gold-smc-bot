@@ -6,27 +6,45 @@ import requests
 from datetime import datetime
 from zoneinfo import ZoneInfo
 
-st.set_page_config(page_title="Gold High-Accuracy AI Terminal", page_icon="🎯", layout="wide")
+st.set_page_config(page_title="XAU/USD AI Desk", page_icon="🪙", layout="wide", initial_sidebar_state="collapsed")
 EAT = ZoneInfo("Africa/Nairobi")
-st.title("Gold High-Accuracy AI & Order Flow Terminal")
-st.caption(f"Pullback Entry + Macro Trend + Killzone Filter + Auto-Journal • Nairobi Time: {datetime.now(EAT).strftime('%H:%M EAT')}")
+
+# Custom Institutional Dark CSS (Hides clutter & styles KPI cards)
+st.markdown("""
+<style>
+#MainMenu, footer, header {visibility: hidden;}
+.block-container {padding-top: 1.2rem; padding-bottom: 1rem; max-width: 1400px;}
+div[data-testid="stMetric"] {
+    background-color: #111827;
+    border: 1px solid #1f2937;
+    padding: 12px 16px;
+    border-radius: 10px;
+}
+</style>
+""", unsafe_allow_html=True)
 
 try:
     saved_key = str(st.secrets["TWELVE_DATA_API_KEY"]).strip()
 except Exception:
     saved_key = ""
 
-api_key = st.text_input("Twelve Data API Key", value=saved_key, type="password").strip()
-symbol = st.selectbox("Gold Feed", ["PAXG/USD", "XAU/USD"], index=0)
-tf = st.selectbox("Timeframe (15min Recommended)", ["15min", "5min"], index=0)
-killzone_only = st.checkbox("Only Trade High-Volume Killzones (10:00-14:00 & 15:00-20:00 EAT)", value=True)
-rr_target = st.slider("Take Profit Target (Risk-to-Reward)", 1.5, 3.0, 1.8, step=0.1)
+# Settings tucked neatly inside the collapsible sidebar (>)
+st.sidebar.header("Desk Settings")
+api_key = st.sidebar.text_input("Twelve Data API Key", value=saved_key, type="password").strip()
+symbol = st.sidebar.selectbox("Gold Feed", ["PAXG/USD", "XAU/USD"], index=0)
+tf = st.sidebar.selectbox("Timeframe", ["15min", "5min"], index=0)
+killzone_only = st.sidebar.checkbox("Killzones Only (10-14 & 15-20 EAT)", value=True)
+rr_target = st.sidebar.slider("Reward-to-Risk Ratio", 1.5, 3.0, 1.8, step=0.1)
 
-if st.button("Refresh Live Candles & Recalculate Win Rate"):
+# Clean Front-Page Header + Instant Refresh Button
+h_left, h_right = st.columns([5, 1])
+h_left.markdown(f"### 🪙 XAU/USD Institutional AI Desk")
+h_left.caption(f"Live Order Flow & Pullback Execution • Nairobi Time: **{datetime.now(EAT).strftime('%H:%M EAT')}**")
+if h_right.button("🔄 Refresh", use_container_width=True):
     st.cache_data.clear()
 
 if not api_key:
-    st.warning("Paste your Twelve Data API Key above (or save it in Streamlit Secrets) to start.")
+    st.warning("Open the top-left sidebar (`>`) and paste your Twelve Data API Key to activate your trading desk.")
     st.stop()
 
 @st.cache_data(ttl=60)
@@ -50,10 +68,10 @@ def get_candles(key: str, sym: str, interval: str):
 
 df, status = get_candles(api_key, symbol, tf)
 if df.empty:
-    st.error(f"Data error ({symbol}): {status}")
+    st.error(f"Feed Notice ({symbol}): {status}")
     st.stop()
 
-# 1. Macro Trend EMAs, ATR & RSI
+# Indicators & Order Flow Engine
 df["ema50"] = df["Close"].ewm(span=50, adjust=False).mean()
 df["ema100"] = df["Close"].ewm(span=100, adjust=False).mean()
 tr = pd.concat([df["High"] - df["Low"], (df["High"] - df["Close"].shift()).abs(), (df["Low"] - df["Close"].shift()).abs()], axis=1).max(axis=1)
@@ -63,35 +81,24 @@ gain = delta.clip(lower=0).rolling(14).mean()
 loss = (-delta.clip(upper=0)).rolling(14).mean().replace(0, 1e-9)
 df["rsi"] = (100 - (100 / (1 + (gain / loss)))).fillna(50)
 
-# 2. ATR Trailing Trend (Sensitivity 2.5 for cleaner swings)
 hl2 = (df["High"] + df["Low"]) / 2.0
 up_band = (hl2 - 2.5 * df["atr"]).to_numpy(dtype=float, copy=True)
 dn_band = (hl2 + 2.5 * df["atr"]).to_numpy(dtype=float, copy=True)
 close_arr = df["Close"].to_numpy(dtype=float, copy=True)
 trend_dir = np.ones(len(df), dtype=int)
-trail_stop = up_band.copy()
 
 for i in range(1, len(df)):
     if close_arr[i - 1] > up_band[i - 1]:
         up_band[i] = float(np.maximum(up_band[i], up_band[i - 1]))
     if close_arr[i - 1] < dn_band[i - 1]:
         dn_band[i] = float(np.minimum(dn_band[i], dn_band[i - 1]))
-    if close_arr[i] > dn_band[i - 1]:
-        trend_dir[i] = 1
-    elif close_arr[i] < up_band[i - 1]:
-        trend_dir[i] = -1
-    else:
-        trend_dir[i] = trend_dir[i - 1]
-    trail_stop[i] = up_band[i] if trend_dir[i] == 1 else dn_band[i]
+    trend_dir[i] = 1 if close_arr[i] > dn_band[i - 1] else (-1 if close_arr[i] < up_band[i - 1] else trend_dir[i - 1])
 
 df["trend_dir"] = trend_dir
-df["trail_stop"] = trail_stop
-
-# 3. Order Flow Candle Delta
 rng = (df["High"] - df["Low"]).replace(0, 0.01)
 df["net_delta"] = ((df["Close"] - df["Low"]) - (df["High"] - df["Close"])) / rng
 
-# 4. Pullback Limit Entry Scanner + Honest Forward Journal
+# Pullback Scanner & Journal Grading
 journal = []
 cooldown = 0
 
@@ -110,9 +117,7 @@ for i in range(30, len(df)):
     macro_bull = (c3["Close"] > c3["ema50"]) and (c3["ema50"] > c3["ema100"])
     macro_bear = (c3["Close"] < c3["ema50"]) and (c3["ema50"] < c3["ema100"])
 
-    # Strong bullish displacement + positive order flow in confirmed macro uptrend
     bull_setup = macro_bull and (c3["trend_dir"] == 1) and (c3["net_delta"] > 0.25) and (45 <= c3["rsi"] <= 66) and (c3["Close"] > c2["High"])
-    # Strong bearish displacement + negative order flow in confirmed macro downtrend
     bear_setup = macro_bear and (c3["trend_dir"] == -1) and (c3["net_delta"] < -0.25) and (34 <= c3["rsi"] <= 55) and (c3["Close"] < c2["Low"])
 
     trade = None
@@ -151,34 +156,45 @@ losses = len([t for t in journal if t["result"] == "LOSS"])
 closed_n = wins + losses
 win_rate = int((wins / closed_n) * 100) if closed_n else 0
 net_r = sum(t["pnl"] for t in journal)
+live_px = float(df["Close"].iloc[-1])
 
-st.metric(f"Live {symbol} ({tf}) • Win Rate: {win_rate}% ({wins}W-{losses}L) • Net: {net_r:+.1f}R", f"${float(df['Close'].iloc[-1]):,.2f}")
+# 1. KPI Summary Row
+k1, k2, k3, k4 = st.columns(4)
+k1.metric(f"Live {symbol} ({tf})", f"${live_px:,.2f}")
+k2.metric("Journal Win Rate", f"{win_rate}%", delta=f"{wins}W - {losses}L")
+k3.metric("Net Performance", f"{net_r:+.1f}R", delta=f"{closed_n} Closed")
+k4.metric("Latest Signal", f"{journal[-1]['side']} LIMIT" if journal else "SCANNING", delta=journal[-1]["result"] if journal else "Killzone Wait")
 
+# 2. Active Signal Card
 if journal:
     last = journal[-1]
-    msg = f"LATEST PULLBACK SETUP ({last['time']} EAT): **{last['side']} LIMIT** [{last['result']}] | Entry: **${last['entry']}** | SL: **${last['sl']}** | TP: **${last['tp']}**"
-    st.success(msg) if last["side"] == "BUY" else st.error(msg)
+    sig_line = f"**ACTIVE SIGNAL ({last['time']} EAT):** **{last['side']} LIMIT** `[{last['result']}]`  |  Entry: **${last['entry']}**  •  SL: **${last['sl']}**  •  TP: **${last['tp']}**"
+    st.success(sig_line) if last["side"] == "BUY" else st.error(sig_line)
+else:
+    st.info("No active Killzone pullback setup in the current window. Scanning live candles...")
 
+# 3. Clean Institutional Candlestick Chart
 fig = go.Figure()
-fig.add_trace(go.Candlestick(x=df.index, open=df["Open"], high=df["High"], low=df["Low"], close=df["Close"], name=symbol))
+fig.add_trace(go.Candlestick(x=df.index, open=df["Open"], high=df["High"], low=df["Low"], close=df["Close"], name=symbol, increasing_line_color="#10b981", decreasing_line_color="#ef4444"))
 fig.add_trace(go.Scatter(x=df.index, y=df["ema50"], mode="lines", name="50 EMA", line=dict(color="#38bdf8", width=1.4)))
 fig.add_trace(go.Scatter(x=df.index, y=df["ema100"], mode="lines", name="100 EMA", line=dict(color="#f59e0b", width=1.8)))
 
-for side, col, sym, pos in [("BUY", "#00ff88", "triangle-up", "bottom center"), ("SELL", "#ff4b4b", "triangle-down", "top center")]:
+for side, col, sym, pos in [("BUY", "#10b981", "triangle-up", "bottom center"), ("SELL", "#ef4444", "triangle-down", "top center")]:
     pts = [t for t in journal if t["side"] == side]
     if pts:
-        fig.add_trace(go.Scatter(x=[p["ts"] for p in pts], y=[p["y"] for p in pts], mode="markers+text", name=side, text=[f"{side} ({p['result']})" for p in pts], textposition=pos, textfont=dict(color=col, size=10), marker=dict(symbol=sym, size=14, color=col)))
+        fig.add_trace(go.Scatter(x=[p["ts"] for p in pts], y=[p["y"] for p in pts], mode="markers+text", name=side, text=[f"{side} ({p['result']})" for p in pts], textposition=pos, textfont=dict(color=col, size=10), marker=dict(symbol=sym, size=13, color=col)))
 
 if journal:
     last = journal[-1]
-    fig.add_hline(y=last["entry"], line_color="#38bdf8", annotation_text=f"Limit Entry ${last['entry']}")
-    fig.add_hline(y=last["sl"], line_dash="dash", line_color="#ff4b4b", annotation_text=f"SL ${last['sl']}")
-    fig.add_hline(y=last["tp"], line_dash="dash", line_color="#00ff88", annotation_text=f"TP ${last['tp']}")
+    fig.add_hline(y=last["entry"], line_color="#38bdf8", annotation_text=f"Entry ${last['entry']}")
+    fig.add_hline(y=last["sl"], line_dash="dash", line_color="#ef4444", annotation_text=f"SL ${last['sl']}")
+    fig.add_hline(y=last["tp"], line_dash="dash", line_color="#10b981", annotation_text=f"TP ${last['tp']}")
 
-fig.update_layout(template="plotly_dark", height=520, margin=dict(l=10, r=10, t=30, b=10), xaxis_rangeslider_visible=False)
+fig.update_layout(template="plotly_dark", paper_bgcolor="#0b0f19", plot_bgcolor="#0b0f19", height=480, margin=dict(l=8, r=8, t=20, b=8), xaxis_rangeslider_visible=False, legend=dict(orientation="h", yanchor="bottom", y=1.01, xanchor="right", x=1))
 st.plotly_chart(fig, use_container_width=True)
 
+# 4. Clean Automated Trade Journal
 if journal:
-    st.subheader("High-Accuracy Pullback Journal")
-    j_df = pd.DataFrame([{"Time (EAT)": t["time"], "Setup": f"{t['side']} LIMIT", "Result": t["result"], "P&L": f"{t['pnl']:+.1f}R", "Limit Entry": f"${t['entry']}", "SL": f"${t['sl']}", "TP": f"${t['tp']}"} for t in reversed(journal)])
+    st.markdown("#### Automated Trade Journal")
+    j_df = pd.DataFrame([{"Time (EAT)": t["time"], "Signal": f"{t['side']} LIMIT", "Status": t["result"], "Return": f"{t['pnl']:+.1f}R", "Limit Entry": f"${t['entry']}", "Stop Loss": f"${t['sl']}", "Take Profit": f"${t['tp']}"} for t in reversed(journal)])
     st.dataframe(j_df, hide_index=True, use_container_width=True)

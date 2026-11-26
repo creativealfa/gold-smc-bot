@@ -35,50 +35,32 @@ def fetch_gold_series(api_key: str, symbol: str, interval: str) -> tuple[pd.Data
         return pd.DataFrame(), str(e)
 
 def build_market_blueprint(df: pd.DataFrame) -> dict:
-    """Builds a Barchart-style Market Blueprint mapping resting pending orders & liquidity pools."""
     p_min, p_max = float(df["Low"].min()), float(df["High"].max())
     bins = np.linspace(p_min, p_max, 36)
     bin_centers = (bins[:-1] + bins[1:]) / 2
     order_density = np.zeros(len(bin_centers))
 
-    # Weight each price level by candle rejection wicks & range participation (resting limit absorption)
     for _, row in df.iterrows():
         rng = max(row["High"] - row["Low"], 0.10)
         wick_weight = 1.0 + ((rng - abs(row["Close"] - row["Open"])) / rng) * 2.0
         mask = (bin_centers >= row["Low"]) & (bin_centers <= row["High"])
         order_density[mask] += wick_weight
 
-    # Boost psychological $25 / $50 institutional resting order levels
     for idx, price in enumerate(bin_centers):
         if abs(price % 50) < 1.5 or abs(price % 25) < 1.0:
             order_density[idx] *= 1.35
 
     poc_price = round(float(bin_centers[np.argmax(order_density)]), 2)
 
-    # Identify Equal Highs (Buy-Stop Pools) & Equal Lows (Sell-Stop Pools)
     highs = df["High"].rolling(5, center=True).max().dropna()
     swing_highs = highs[highs == df["High"].reindex(highs.index)].unique()
-    eq_highs = []
-    for i in range(len(swing_highs)):
-        for j in range(i + 1, len(swing_highs)):
-            if abs(swing_highs[i] - swing_highs[j]) <= 1.80:
-                eq_highs.append(round(float(max(swing_highs[i], swing_highs[j])), 2))
+    eq_highs = [round(float(max(swing_highs[i], swing_highs[j])), 2) for i in range(len(swing_highs)) for j in range(i + 1, len(swing_highs)) if abs(swing_highs[i] - swing_highs[j]) <= 1.80]
 
     lows = df["Low"].rolling(5, center=True).min().dropna()
     swing_lows = lows[lows == df["Low"].reindex(lows.index)].unique()
-    eq_lows = []
-    for i in range(len(swing_lows)):
-        for j in range(i + 1, len(swing_lows)):
-            if abs(swing_lows[i] - swing_lows[j]) <= 1.80:
-                eq_lows.append(round(float(min(swing_lows[i], swing_lows[j])), 2))
+    eq_lows = [round(float(min(swing_lows[i], swing_lows[j])), 2) for i in range(len(swing_lows)) for j in range(i + 1, len(swing_lows)) if abs(swing_lows[i] - swing_lows[j]) <= 1.80]
 
-    return {
-        "levels": bin_centers,
-        "density": order_density,
-        "poc": poc_price,
-        "buy_stops": sorted(list(set(eq_highs)))[-3:],
-        "sell_stops": sorted(list(set(eq_lows)))[:3],
-    }
+    return {"levels": bin_centers, "density": order_density, "poc": poc_price, "buy_stops": sorted(list(set(eq_highs)))[-3:], "sell_stops": sorted(list(set(eq_lows)))[:3]}
 
 def engineer_unified_features(df: pd.DataFrame) -> pd.DataFrame:
     d = df.copy()
@@ -135,24 +117,21 @@ def analyze_10cord_setups(df: pd.DataFrame, bp: dict, lookback: int, buf: float,
         in_killzone = (10 <= ts.hour <= 13) or (15 <= ts.hour <= 19)
         X_now = pd.DataFrame([c3[f_cols].fillna(0)])
 
-        # --- SELL CONFLUENCE (10 CORDS) ---
-        swept_high = (c1["High"] > s_high + buf) or (c2["High"] > s_high + buf)
-        if swept_high and (c3["Close"] < s_high) and (c1["Low"] > c3["High"]):
+        # SELL CONFLUENCE (10 CORDS)
+        if ((c1["High"] > s_high + buf) or (c2["High"] > s_high + buf)) and (c3["Close"] < s_high) and (c1["Low"] > c3["High"]):
             peak = max(c1["High"], c2["High"])
-            hit_buy_stops = any(abs(peak - lvl) <= 2.5 for lvl in bp["buy_stops"]) or (peak >= s_high + buf)
-            hit_limit_node = any(abs(peak - lvl) <= 2.0 for lvl in high_density_levels)
-            cords = {
-                "[BLUEPRINT] Resting Buy-Stop Pool Swept": hit_buy_stops,
-                "[BLUEPRINT] Institutional Limit Node Reaction": hit_limit_node,
-                "[CRT] Range High Purge & Reclaim": peak > crt_hi and c3["Close"] < crt_hi,
-                "[CRT] Pre-Sweep AMD Compression": c1["crt_range_ratio"] < 0.85,
-                "[ICT] Premium Zone Entry (>0.62 Fib)": max(c1["ict_pd_level"], c2["ict_pd_level"]) >= 0.62,
-                "[ICT] Killzone Session Timing": in_killzone,
-                "[SMC] MSS + Displacement (>0.8x ATR)": c2["body_atr"] > 0.8 or c3["body_atr"] > 0.8,
-                "[SMC] Clean Bearish FVG + OB": (c1["Low"] - c3["High"]) >= 0.20 and c1["Close"] > c1["Open"],
-                "[TREND] Trendline Breakdown / Slope": c3["trend_slope"] < 0 or c3["Close"] < c2["Low"],
-                "[TREND] Bearish EMA 20/50 Alignment": c3["ema20"] < c3["ema50"],
-            }
+            cords = {}
+            cords["[BLUEPRINT] Resting Buy-Stop Pool Swept"] = any(abs(peak - lvl) <= 2.5 for lvl in bp["buy_stops"]) or (peak >= s_high + buf)
+            cords["[BLUEPRINT] Institutional Limit Node Reaction"] = any(abs(peak - lvl) <= 2.0 for lvl in high_density_levels)
+            cords["[CRT] Range High Purge & Reclaim"] = (peak > crt_hi) and (c3["Close"] < crt_hi)
+            cords["[CRT] Pre-Sweep AMD Compression"] = c1["crt_range_ratio"] < 0.85
+            cords["[ICT] Premium Zone Entry (>0.62 Fib)"] = max(c1["ict_pd_level"], c2["ict_pd_level"]) >= 0.62
+            cords["[ICT] Killzone Session Timing"] = in_killzone
+            cords["[SMC] MSS + Displacement (>0.8x ATR)"] = (c2["body_atr"] > 0.8) or (c3["body_atr"] > 0.8)
+            cords["[SMC] Clean Bearish FVG + OB"] = ((c1["Low"] - c3["High"]) >= 0.20) and (c1["Close"] > c1["Open"])
+            cords["[TREND] Trendline Breakdown / Slope"] = (c3["trend_slope"] < 0) or (c3["Close"] < c2["Low"])
+            cords["[TREND] Bearish EMA 20/50 Alignment"] = c3["ema20"] < c3["ema50"]
+
             cord_score = sum(cords.values())
             ai_prob = int(s_mod.predict_proba(X_now) * 100) if s_mod else 65
             final_conf = int((ai_prob * 0.40) + ((cord_score / 10) * 100 * 0.60))
@@ -164,14 +143,21 @@ def analyze_10cord_setups(df: pd.DataFrame, bp: dict, lookback: int, buf: float,
                 badge = "HIGH" if final_conf >= 75 else ("MEDIUM" if final_conf >= 60 else "LOW")
                 signals.append({"timestamp": ts, "time_str": ts.strftime("%m-%d %H:%M"), "side": "SELL", "marker_y": float(c3["High"]) + 1.3, "entry": entry, "sl": sl, "tp": tp, "confidence": final_conf, "ai_prob": ai_prob, "cords": cords, "badge": badge})
 
-        # --- BUY CONFLUENCE (10 CORDS) ---
-        swept_low = (c1["Low"] < s_low - buf) or (c2["Low"] < s_low - buf)
-        if swept_low and (c3["Close"] > s_low) and (c1["High"] < c3["Low"]):
+        # BUY CONFLUENCE (10 CORDS)
+        if ((c1["Low"] < s_low - buf) or (c2["Low"] < s_low - buf)) and (c3["Close"] > s_low) and (c1["High"] < c3["Low"]):
             bottom = min(c1["Low"], c2["Low"])
-            hit_sell_stops = any(abs(bottom - lvl) <= 2.5 for lvl in bp["sell_stops"]) or (bottom <= s_low - buf)
-            hit_limit_node = any(abs(bottom - lvl) <= 2.0 for lvl in high_density_levels)
-            cords = {
-                "[BLUEPRINT] Resting Sell-Stop Pool Swept": hit_sell_stops,
-                "[BLUEPRINT] Institutional Limit Node Reaction": hit_limit_node,
-                "[CRT] Range Low Purge & Reclaim": bottom < crt_lo and c3["Close"] > crt_lo,
-                "[CRT] Pre-Sweep AMD Compression": c1["crt_range_ratio"] < 0.85,
+            cords = {}
+            cords["[BLUEPRINT] Resting Sell-Stop Pool Swept"] = any(abs(bottom - lvl) <= 2.5 for lvl in bp["sell_stops"]) or (bottom <= s_low - buf)
+            cords["[BLUEPRINT] Institutional Limit Node Reaction"] = any(abs(bottom - lvl) <= 2.0 for lvl in high_density_levels)
+            cords["[CRT] Range Low Purge & Reclaim"] = (bottom < crt_lo) and (c3["Close"] > crt_lo)
+            cords["[CRT] Pre-Sweep AMD Compression"] = c1["crt_range_ratio"] < 0.85
+            cords["[ICT] Discount Zone Entry (<0.38 Fib)"] = min(c1["ict_pd_level"], c2["ict_pd_level"]) <= 0.38
+            cords["[ICT] Killzone Session Timing"] = in_killzone
+            cords["[SMC] MSS + Displacement (>0.8x ATR)"] = (c2["body_atr"] > 0.8) or (c3["body_atr"] > 0.8)
+            cords["[SMC] Clean Bullish FVG + OB"] = ((c3["Low"] - c1["High"]) >= 0.20) and (c1["Close"] < c1["Open"])
+            cords["[TREND] Trendline Breakout / Slope"] = (c3["trend_slope"] > 0) or (c3["Close"] > c2["High"])
+            cords["[TREND] Bullish EMA 20/50 Alignment"] = c3["ema20"] > c3["ema50"]
+
+            cord_score = sum(cords.values())
+            ai_prob = int(b_mod.predict_proba(X_now) * 100) if b_mod else 65
+

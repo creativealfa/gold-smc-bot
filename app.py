@@ -52,7 +52,6 @@ if df.empty:
     st.error(f"Market Data Notice ({symbol_feed}): {msg}")
     st.stop()
 
-# Market Blueprint POC & Indicators
 bins = np.linspace(float(df["Low"].min()), float(df["High"].max()), 26)
 centers = (bins[:-1] + bins[1:]) / 2
 density = np.zeros(len(centers))
@@ -72,7 +71,6 @@ df["crt_ratio"] = (df["High"].rolling(6).max() - df["Low"].rolling(6).min()) / (
 r_hi, r_lo = df["High"].rolling(24).max(), df["Low"].rolling(24).min()
 df["ict_pd"] = ((df["Close"] - r_lo) / (r_hi - r_lo).replace(0, 1e-9)).fillna(0.5)
 
-# Scan & Grade Journal Outcomes
 trades = []
 for i in range(23, len(df)):
     prior = df.iloc[i - 22 : i - 2]
@@ -100,7 +98,7 @@ for i in range(23, len(df)):
 
     if setup:
         out, filled, pnl, note = "PENDING", False, 0.0, "Waiting for FVG fill"
-        for _, fb in df.iloc[i + 1 :].iterrows():
+        for idx_f, fb in df.iloc[i + 1 :].iterrows():
             if not filled and fb["Low"] <= setup["en"] <= fb["High"]:
                 filled, out, note = True, "OPEN", "Active trade"
             if filled:
@@ -116,8 +114,7 @@ for i in range(23, len(df)):
         setup.update({"out": out, "pnl": pnl, "note": note})
         trades.append(setup)
 
-# Self-Learning Weight Calibration
-c_names = list(trades["cords"].keys()) if trades else []
+c_names = list(trades[0]["cords"].keys()) if trades else []
 closed = [t for t in trades if t["out"] in ("WIN", "LOSS")]
 wins = [t for t in closed if t["out"] == "WIN"]
 losses = [t for t in closed if t["out"] == "LOSS"]
@@ -133,7 +130,6 @@ for t in trades:
     if t["conf"] >= min_conf:
         signals.append(t)
 
-# Metrics & AI Reflection
 wr = int((len(wins) / len(closed)) * 100) if closed else 0
 st.metric(f"Live {symbol_feed} (POC: ${poc:,.2f}) | Journal: {len(wins)}W-{len(losses)}L ({wr}% WR)", f"${float(df['Close'].iloc[-1]):,.2f}")
 
@@ -147,7 +143,6 @@ if signals:
     msg_txt = f"LATEST ({last['t_str']} EAT): **{last['side']}** [{last['out']}] | Adj. Conf: **{last['conf']}%** | Entry: **${last['en']}** | SL: **${last['sl']}** | TP: **${last['tp']}**"
     st.success(msg_txt) if last["side"] == "BUY" else st.error(msg_txt)
 
-# Live Chart
 fig = go.Figure()
 fig.add_trace(go.Candlestick(x=df.index, open=df["Open"], high=df["High"], low=df["Low"], close=df["Close"], name=symbol_feed))
 fig.add_trace(go.Scatter(x=df.index, y=df["ema20"], mode="lines", name="EMA20", line=dict(color="#38bdf8", width=1.2)))
@@ -163,3 +158,5 @@ if signals:
     last = signals[-1]
     fig.add_hline(y=last["en"], line_color="#38bdf8", annotation_text=f"Entry ${last['en']}")
     fig.add_hline(y=last["sl"], line_dash="dash", line_color="#ff4b4b", annotation_text=f"SL ${last['sl']}")
+    fig.add_hline(y=last["tp"], line_dash="dash", line_color="#00ff88", annotation_text=f"TP ${last['tp']}")
+

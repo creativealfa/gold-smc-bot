@@ -7,12 +7,10 @@ import requests
 from datetime import datetime
 from zoneinfo import ZoneInfo
 
-st.set_page_config(page_title="Gold 10-Cord AI Terminal", page_icon="🧠", layout="wide")
+st.set_page_config(page_title="Gold Live AI Terminal", page_icon="📈", layout="wide")
 EAT_TZ = ZoneInfo("Africa/Nairobi")
 
-now_eat = datetime.now(EAT_TZ)
-st.title("Gold 10-Cord AI & Market Blueprint Terminal")
-st.caption(f"Order-Book Heatmap + CRT + ICT + SMC + Trend | Nairobi Time: {now_eat.strftime('%H:%M EAT')}")
+st.title("Gold Live AI & Market Blueprint Terminal")
 
 saved_key = ""
 try:
@@ -20,19 +18,19 @@ try:
 except Exception:
     saved_key = ""
 
-exp = st.expander("Terminal Settings & Timeframe", expanded=(not bool(saved_key)))
+exp = st.expander("Terminal Settings & Live Auto-Refresh", expanded=(not bool(saved_key)))
 c_key, c_feed, c_tf, c_conf = exp.columns(4)
 api_key = c_key.text_input("Twelve Data API Key", value=saved_key, type="password", placeholder="Paste API key...").strip()
 symbol_feed = c_feed.selectbox("Gold Feed", ["PAXG/USD", "XAU/USD"], index=0)
 timeframe = c_tf.selectbox("Timeframe", ["5min", "1min", "15min"], index=0)
 min_conf = c_conf.slider("Min AI Confidence %", 40, 85, 50)
+auto_live = exp.checkbox("Enable Live Auto-Refresh (Every 60 Seconds)", value=True)
 
 if not api_key:
-    st.warning("Paste your Twelve Data API Key in the settings box above to load the live Gold chart.")
+    st.warning("Paste your Twelve Data API Key in the settings box above to start the live candles and AI signals.")
     st.stop()
 
-@st.cache_data(ttl=180)
-def fetch_gold_series(key: str, symbol: str, interval: str) -> tuple[pd.DataFrame, str]:
+def fetch_live_candles(key: str, symbol: str, interval: str) -> tuple[pd.DataFrame, str]:
     base_url = "https://" + "api." + "twelvedata" + ".com" + "/time_series"
     params = {"symbol": symbol, "interval": interval, "outputsize": 180, "timezone": "Africa/Nairobi", "apikey": key}
     try:
@@ -50,12 +48,6 @@ def fetch_gold_series(key: str, symbol: str, interval: str) -> tuple[pd.DataFram
         return df, "OK"
     except Exception as e:
         return pd.DataFrame(), f"Connection error: {e}"
-
-df, status_msg = fetch_gold_series(api_key, symbol_feed, timeframe)
-
-if df.empty:
-    st.error(f"Could not load {symbol_feed}: {status_msg}")
-    st.stop()
 
 def build_market_blueprint(df: pd.DataFrame) -> dict:
     p_min, p_max = float(df["Low"].min()), float(df["High"].max())
@@ -113,7 +105,7 @@ def analyze_10cord_setups(df: pd.DataFrame, bp: dict, min_conf_val: int) -> list
     high_density_levels = bp["levels"][bp["density"] >= np.percentile(bp["density"], 75)]
     lookback, buf, rr = 20, 0.50, 2.0
 
-    for i in range(lookback + 3, len(df) - 1):
+    for i in range(lookback + 3, len(df)):
         prior = df.iloc[i - lookback - 2 : i - 2]
         s_high, s_low = float(prior["High"].max()), float(prior["Low"].min())
         crt_block = df.iloc[i - 6 : i - 2]
@@ -171,3 +163,5 @@ def analyze_10cord_setups(df: pd.DataFrame, bp: dict, min_conf_val: int) -> list
             if final_conf >= min_conf_val:
                 entry = round((c1["High"] + c3["Low"]) / 2, 2)
                 sl = round(bottom - 0.80, 2)
+                tp = round(entry + max(entry - sl, 0.50) * rr, 2)
+                badge = "HIGH" if final_conf >= 75 else ("MEDIUM" if final_conf >= 60 else "LOW")

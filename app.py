@@ -14,22 +14,20 @@ now_eat = datetime.now(EAT_TZ)
 st.title("Gold 10-Cord AI & Market Blueprint Terminal")
 st.caption(f"Order-Book Heatmap + CRT + ICT + SMC + Trend | Nairobi Time: {now_eat.strftime('%H:%M EAT')}")
 
-# Safely read Secrets without crashing if Secrets file is empty or unconfigured
 saved_key = ""
 try:
     saved_key = str(st.secrets["TWELVE_DATA_API_KEY"]).strip()
 except Exception:
     saved_key = ""
 
-# Visible main-screen control bar (easy to tap on both Android and Windows)
-c_key, c_feed, c_tf, c_conf = st.columns([2, 1, 1, 1])
-api_key = c_key.text_input("Twelve Data API Key", value=saved_key, type="password", placeholder="Paste your API key here...").strip()
+c_key, c_feed, c_tf, c_conf = st.columns(4)
+api_key = c_key.text_input("Twelve Data API Key", value=saved_key, type="password", placeholder="Paste API key...").strip()
 symbol_feed = c_feed.selectbox("Gold Feed", ["PAXG/USD", "XAU/USD"], index=0)
 timeframe = c_tf.selectbox("Timeframe", ["5min", "1min", "15min"], index=0)
 min_conf = c_conf.slider("Min AI Confidence %", 40, 85, 50)
 
 if not api_key:
-    st.warning("Paste your Twelve Data API Key in the box above to load the live Gold chart and 10-Cord AI scanner.")
+    st.warning("Paste your Twelve Data API Key in the box above to load the live Gold chart.")
     st.stop()
 
 @st.cache_data(ttl=180)
@@ -52,12 +50,10 @@ def fetch_gold_series(key: str, symbol: str, interval: str) -> tuple[pd.DataFram
     except Exception as e:
         return pd.DataFrame(), f"Connection error: {e}"
 
-with st.spinner(f"Fetching live {symbol_feed} data & running 10-Cord AI..."):
-    df, status_msg = fetch_gold_series(api_key, symbol_feed, timeframe)
+df, status_msg = fetch_gold_series(api_key, symbol_feed, timeframe)
 
 if df.empty:
     st.error(f"Could not load {symbol_feed}: {status_msg}")
-    st.info("Tip: If XAU/USD says it requires a paid plan, switch the 'Gold Feed' dropdown above to PAXG/USD.")
     st.stop()
 
 def build_market_blueprint(df: pd.DataFrame) -> dict:
@@ -168,4 +164,10 @@ def analyze_10cord_setups(df: pd.DataFrame, bp: dict, min_conf_val: int) -> list
             cords["[TREND] Bullish EMA 20/50 Alignment"] = trend_ok
 
             cord_score = sum(cords.values())
+            ai_prob = learn_historical_winrate(df.iloc[:i], "BUY", in_killzone, trend_ok)
+            final_conf = int((ai_prob * 0.40) + ((cord_score / 10) * 100 * 0.60))
 
+            if final_conf >= min_conf_val:
+                entry = round((c1["High"] + c3["Low"]) / 2, 2)
+                sl = round(bottom - 0.80, 2)
+                tp = round(entry + max(entry - sl, 0.50) * rr, 2)

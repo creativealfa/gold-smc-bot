@@ -7,25 +7,40 @@ import requests
 from datetime import datetime
 from zoneinfo import ZoneInfo
 
-st.set_page_config(page_title="Gold 10-Cord AI Terminal", page_icon="🧠", layout="wide", initial_sidebar_state="collapsed")
+st.set_page_config(page_title="Gold 10-Cord AI Terminal", page_icon="🧠", layout="wide")
 EAT_TZ = ZoneInfo("Africa/Nairobi")
-default_key = st.secrets.get("TWELVE_DATA_API_KEY", "").strip() if hasattr(st, "secrets") else ""
 
 now_eat = datetime.now(EAT_TZ)
 st.title("Gold 10-Cord AI & Market Blueprint Terminal")
 st.caption(f"Order-Book Heatmap + CRT + ICT + SMC + Trend | Nairobi Time: {now_eat.strftime('%H:%M EAT')}")
 
+# Safely read Secrets without crashing if Secrets file is empty or unconfigured
+saved_key = ""
+try:
+    saved_key = str(st.secrets["TWELVE_DATA_API_KEY"]).strip()
+except Exception:
+    saved_key = ""
+
+# Visible main-screen control bar (easy to tap on both Android and Windows)
+c_key, c_feed, c_tf, c_conf = st.columns([2, 1, 1, 1])
+api_key = c_key.text_input("Twelve Data API Key", value=saved_key, type="password", placeholder="Paste your API key here...").strip()
+symbol_feed = c_feed.selectbox("Gold Feed", ["PAXG/USD", "XAU/USD"], index=0)
+timeframe = c_tf.selectbox("Timeframe", ["5min", "1min", "15min"], index=0)
+min_conf = c_conf.slider("Min AI Confidence %", 40, 85, 50)
+
+if not api_key:
+    st.warning("Paste your Twelve Data API Key in the box above to load the live Gold chart and 10-Cord AI scanner.")
+    st.stop()
+
 @st.cache_data(ttl=180)
-def fetch_gold_series(api_key: str, symbol: str, interval: str) -> tuple[pd.DataFrame, str]:
-    if not api_key:
-        return pd.DataFrame(), "No API key provided."
+def fetch_gold_series(key: str, symbol: str, interval: str) -> tuple[pd.DataFrame, str]:
     base_url = "https://" + "api." + "twelvedata" + ".com" + "/time_series"
-    params = {"symbol": symbol, "interval": interval, "outputsize": 180, "timezone": "Africa/Nairobi", "apikey": api_key}
+    params = {"symbol": symbol, "interval": interval, "outputsize": 180, "timezone": "Africa/Nairobi", "apikey": key}
     try:
-        resp = requests.get(base_url, params=params, headers={"User-Agent": "Mozilla/5.0"}, timeout=8)
+        resp = requests.get(base_url, params=params, headers={"User-Agent": "Mozilla/5.0"}, timeout=10)
         res = resp.json()
         if "values" not in res:
-            return pd.DataFrame(), res.get("message", "Unknown API response")
+            return pd.DataFrame(), res.get("message", f"API Error: {res}")
         df = pd.DataFrame(res["values"])
         df["datetime"] = pd.to_datetime(df["datetime"])
         df = df.set_index("datetime").sort_index()
@@ -35,7 +50,15 @@ def fetch_gold_series(api_key: str, symbol: str, interval: str) -> tuple[pd.Data
         df.rename(columns={"open": "Open", "high": "High", "low": "Low", "close": "Close"}, inplace=True)
         return df, "OK"
     except Exception as e:
-        return pd.DataFrame(), str(e)
+        return pd.DataFrame(), f"Connection error: {e}"
+
+with st.spinner(f"Fetching live {symbol_feed} data & running 10-Cord AI..."):
+    df, status_msg = fetch_gold_series(api_key, symbol_feed, timeframe)
+
+if df.empty:
+    st.error(f"Could not load {symbol_feed}: {status_msg}")
+    st.info("Tip: If XAU/USD says it requires a paid plan, switch the 'Gold Feed' dropdown above to PAXG/USD.")
+    st.stop()
 
 def build_market_blueprint(df: pd.DataFrame) -> dict:
     p_min, p_max = float(df["Low"].min()), float(df["High"].max())
@@ -43,11 +66,7 @@ def build_market_blueprint(df: pd.DataFrame) -> dict:
     bin_centers = (bins[:-1] + bins[1:]) / 2
     order_density = np.zeros(len(bin_centers))
 
-    lows_arr = df["Low"].to_numpy()
-    highs_arr = df["High"].to_numpy()
-    bodies_arr = np.abs(df["Close"].to_numpy() - df["Open"].to_numpy())
-
-    for lo, hi, body in zip(lows_arr, highs_arr, bodies_arr):
+    for lo, hi, body in zip(df["Low"].to_numpy(), df["High"].to_numpy(), np.abs(df["Close"].to_numpy() - df["Open"].to_numpy())):
         rng = max(hi - lo, 0.10)
         wick_weight = 1.0 + ((rng - body) / rng) * 2.0
         order_density[(bin_centers >= lo) & (bin_centers <= hi)] += wick_weight
@@ -72,7 +91,6 @@ def engineer_unified_features(df: pd.DataFrame) -> pd.DataFrame:
     d = df.copy()
     d["ema20"] = d["Close"].ewm(span=20, adjust=False).mean()
     d["ema50"] = d["Close"].ewm(span=50, adjust=False).mean()
-    # Instant vectorized trend slope (replaces slow polyfit loop)
     d["trend_slope"] = d["ema20"].diff(5).fillna(0)
     tr = pd.concat([d["High"] - d["Low"], (d["High"] - d["Close"].shift()).abs(), (d["Low"] - d["Close"].shift()).abs()], axis=1).max(axis=1)
     d["atr"] = tr.rolling(14).mean().bfill()
@@ -88,21 +106,15 @@ def learn_historical_winrate(df: pd.DataFrame, side: str, in_killzone: bool, tre
     fut_hi = df["High"].rolling(8).max().shift(-8).iloc[:-8]
     fut_lo = df["Low"].rolling(8).min().shift(-8).iloc[:-8]
     base = df.iloc[:-8]
-    if side == "BUY":
-        wins = ((fut_hi - base["Close"]) > (base["atr"] * 1.1)).mean()
-    else:
-        wins = ((base["Close"] - fut_lo) > (base["atr"] * 1.1)).mean()
-    prob = float(wins) * 100
-    if in_killzone:
-        prob += 12
-    if trend_aligned:
-        prob += 10
+    wins = ((fut_hi - base["Close"]) > (base["atr"] * 1.1)).mean() if side == "BUY" else ((base["Close"] - fut_lo) > (base["atr"] * 1.1)).mean()
+    prob = float(wins) * 100 + (12 if in_killzone else 0) + (10 if trend_aligned else 0)
     return int(np.clip(prob, 45, 92))
 
-def analyze_10cord_setups(df: pd.DataFrame, bp: dict, lookback: int, buf: float, rr: float, min_conf: int) -> list[dict]:
+def analyze_10cord_setups(df: pd.DataFrame, bp: dict, min_conf_val: int) -> list[dict]:
     df = engineer_unified_features(df)
     signals = []
     high_density_levels = bp["levels"][bp["density"] >= np.percentile(bp["density"], 75)]
+    lookback, buf, rr = 20, 0.50, 2.0
 
     for i in range(lookback + 3, len(df) - 1):
         prior = df.iloc[i - lookback - 2 : i - 2]
@@ -133,7 +145,7 @@ def analyze_10cord_setups(df: pd.DataFrame, bp: dict, lookback: int, buf: float,
             ai_prob = learn_historical_winrate(df.iloc[:i], "SELL", in_killzone, trend_ok)
             final_conf = int((ai_prob * 0.40) + ((cord_score / 10) * 100 * 0.60))
 
-            if final_conf >= min_conf:
+            if final_conf >= min_conf_val:
                 entry = round((c1["Low"] + c3["High"]) / 2, 2)
                 sl = round(peak + 0.80, 2)
                 tp = round(entry - max(sl - entry, 0.50) * rr, 2)
@@ -156,17 +168,4 @@ def analyze_10cord_setups(df: pd.DataFrame, bp: dict, lookback: int, buf: float,
             cords["[TREND] Bullish EMA 20/50 Alignment"] = trend_ok
 
             cord_score = sum(cords.values())
-            ai_prob = learn_historical_winrate(df.iloc[:i], "BUY", in_killzone, trend_ok)
-            final_conf = int((ai_prob * 0.40) + ((cord_score / 10) * 100 * 0.60))
-
-            if final_conf >= min_conf:
-                entry = round((c1["High"] + c3["Low"]) / 2, 2)
-                sl = round(bottom - 0.80, 2)
-                tp = round(entry + max(entry - sl, 0.50) * rr, 2)
-                badge = "HIGH" if final_conf >= 75 else ("MEDIUM" if final_conf >= 60 else "LOW")
-                signals.append({"timestamp": ts, "time_str": ts.strftime("%m-%d %H:%M"), "side": "BUY", "marker_y": float(c3["Low"]) - 1.3, "entry": entry, "sl": sl, "tp": tp, "confidence": final_conf, "ai_prob": ai_prob, "cords": cords, "badge": badge})
-
-    return signals
-
-st.sidebar.header("10-Cord Blueprint AI")
 

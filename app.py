@@ -8,7 +8,7 @@ from datetime import datetime
 from zoneinfo import ZoneInfo
 from sklearn.ensemble import RandomForestClassifier
 
-st.set_page_config(page_title="Gold AI & Market Blueprint Terminal", page_icon="🧠", layout="wide", initial_sidebar_state="collapsed")
+st.set_page_config(page_title="Gold 10-Cord AI Terminal", page_icon="🧠", layout="wide", initial_sidebar_state="collapsed")
 EAT_TZ = ZoneInfo("Africa/Nairobi")
 default_key = st.secrets.get("TWELVE_DATA_API_KEY", "").strip() if hasattr(st, "secrets") else ""
 
@@ -17,7 +17,7 @@ def fetch_gold_series(api_key: str, symbol: str, interval: str) -> tuple[pd.Data
     if not api_key:
         return pd.DataFrame(), "No API key provided."
     base_url = "https://" + "api." + "twelvedata" + ".com" + "/time_series"
-    params = {"symbol": symbol, "interval": interval, "outputsize": 300, "timezone": "Africa/Nairobi", "apikey": api_key}
+    params = {"symbol": symbol, "interval": interval, "outputsize": 250, "timezone": "Africa/Nairobi", "apikey": api_key}
     try:
         resp = requests.get(base_url, params=params, headers={"User-Agent": "Mozilla/5.0"}, timeout=10)
         res = resp.json()
@@ -67,7 +67,7 @@ def engineer_unified_features(df: pd.DataFrame) -> pd.DataFrame:
     d["ema20"] = d["Close"].ewm(span=20, adjust=False).mean()
     d["ema50"] = d["Close"].ewm(span=50, adjust=False).mean()
     d["ema_spread"] = (d["ema20"] - d["ema50"]) / d["Close"]
-    d["trend_slope"] = d["Close"].rolling(15).apply(lambda x: np.polyfit(range(len(x)), x, 1), raw=True).fillna(0)
+    d["trend_slope"] = d["Close"].rolling(15).apply(lambda x: np.polyfit(range(len(x)), x, 1)[0], raw=True).fillna(0)
     tr = pd.concat([d["High"] - d["Low"], (d["High"] - d["Close"].shift()).abs(), (d["Low"] - d["Close"].shift()).abs()], axis=1).max(axis=1)
     d["atr"] = tr.rolling(14).mean().bfill()
     d["body_atr"] = (d["Close"] - d["Open"]).abs() / d["atr"].replace(0, 1)
@@ -94,11 +94,17 @@ def train_unified_ai(df: pd.DataFrame):
     y_buy = ((fut_hi - train_df["Close"]) > (train_df["atr"] * 1.2)).astype(int)
     y_sell = ((train_df["Close"] - fut_lo) > (train_df["atr"] * 1.2)).astype(int)
     X = train_df[f_cols].fillna(0)
-    b_mod = RandomForestClassifier(n_estimators=100, max_depth=6, random_state=42)
-    s_mod = RandomForestClassifier(n_estimators=100, max_depth=6, random_state=42)
+    b_mod = RandomForestClassifier(n_estimators=80, max_depth=5, random_state=42)
+    s_mod = RandomForestClassifier(n_estimators=80, max_depth=5, random_state=42)
     b_mod = b_mod.fit(X, y_buy) if y_buy.nunique() > 1 else None
     s_mod = s_mod.fit(X, y_sell) if y_sell.nunique() > 1 else None
     return b_mod, s_mod, f_cols
+
+def get_prob(model, X_row) -> int:
+    if model is None:
+        return 65
+    probs = model.predict_proba(X_row)[0]
+    return int(probs[-1] * 100)
 
 def analyze_10cord_setups(df: pd.DataFrame, bp: dict, lookback: int, buf: float, rr: float, min_conf: int) -> list[dict]:
     df = engineer_unified_features(df)
@@ -117,7 +123,6 @@ def analyze_10cord_setups(df: pd.DataFrame, bp: dict, lookback: int, buf: float,
         in_killzone = (10 <= ts.hour <= 13) or (15 <= ts.hour <= 19)
         X_now = pd.DataFrame([c3[f_cols].fillna(0)])
 
-        # SELL CONFLUENCE (10 CORDS)
         if ((c1["High"] > s_high + buf) or (c2["High"] > s_high + buf)) and (c3["Close"] < s_high) and (c1["Low"] > c3["High"]):
             peak = max(c1["High"], c2["High"])
             cords = {}
@@ -133,7 +138,7 @@ def analyze_10cord_setups(df: pd.DataFrame, bp: dict, lookback: int, buf: float,
             cords["[TREND] Bearish EMA 20/50 Alignment"] = c3["ema20"] < c3["ema50"]
 
             cord_score = sum(cords.values())
-            ai_prob = int(s_mod.predict_proba(X_now) * 100) if s_mod else 65
+            ai_prob = get_prob(s_mod, X_now)
             final_conf = int((ai_prob * 0.40) + ((cord_score / 10) * 100 * 0.60))
 
             if final_conf >= min_conf:
@@ -143,7 +148,6 @@ def analyze_10cord_setups(df: pd.DataFrame, bp: dict, lookback: int, buf: float,
                 badge = "HIGH" if final_conf >= 75 else ("MEDIUM" if final_conf >= 60 else "LOW")
                 signals.append({"timestamp": ts, "time_str": ts.strftime("%m-%d %H:%M"), "side": "SELL", "marker_y": float(c3["High"]) + 1.3, "entry": entry, "sl": sl, "tp": tp, "confidence": final_conf, "ai_prob": ai_prob, "cords": cords, "badge": badge})
 
-        # BUY CONFLUENCE (10 CORDS)
         if ((c1["Low"] < s_low - buf) or (c2["Low"] < s_low - buf)) and (c3["Close"] > s_low) and (c1["High"] < c3["Low"]):
             bottom = min(c1["Low"], c2["Low"])
             cords = {}
@@ -159,5 +163,4 @@ def analyze_10cord_setups(df: pd.DataFrame, bp: dict, lookback: int, buf: float,
             cords["[TREND] Bullish EMA 20/50 Alignment"] = c3["ema20"] > c3["ema50"]
 
             cord_score = sum(cords.values())
-            ai_prob = int(b_mod.predict_proba(X_now) * 100) if b_mod else 65
-
+            ai_prob = get_prob(b_mod, X_now)

@@ -52,27 +52,28 @@ if df.empty:
     st.error(f"Data error ({symbol}): {status}")
     st.stop()
 
-# 1. Simple Trade AI: ATR Trailing Stop + 50 EMA + RSI
+# 1. Simple Trade AI: ATR Trailing Stop + 50 EMA + RSI (Writable Float Arrays)
 df["ema50"] = df["Close"].ewm(span=50, adjust=False).mean()
 tr = pd.concat([df["High"] - df["Low"], (df["High"] - df["Close"].shift()).abs(), (df["Low"] - df["Close"].shift()).abs()], axis=1).max(axis=1)
-df["atr"] = tr.rolling(14).mean().bfill()
+df["atr"] = tr.rolling(14).mean().bfill().ffill().fillna(1.0)
 delta = df["Close"].diff()
 gain = delta.clip(lower=0).rolling(14).mean()
 loss = (-delta.clip(upper=0)).rolling(14).mean().replace(0, 1e-9)
 df["rsi"] = (100 - (100 / (1 + (gain / loss)))).fillna(50)
 
-hl2 = (df["High"] + df["Low"]) / 2
-up_band = (hl2 - atr_mult * df["atr"]).to_numpy()
-dn_band = (hl2 + atr_mult * df["atr"]).to_numpy()
-close_arr = df["Close"].to_numpy()
+hl2 = (df["High"] + df["Low"]) / 2.0
+up_band = (hl2 - atr_mult * df["atr"]).to_numpy(dtype=float, copy=True)
+dn_band = (hl2 + atr_mult * df["atr"]).to_numpy(dtype=float, copy=True)
+close_arr = df["Close"].to_numpy(dtype=float, copy=True)
 trend_dir = np.ones(len(df), dtype=int)
-trail_stop = np.zeros(len(df))
+trail_stop = np.zeros(len(df), dtype=float)
+trail_stop[0] = up_band[0]
 
 for i in range(1, len(df)):
     if close_arr[i - 1] > up_band[i - 1]:
-        up_band[i] = max(up_band[i], up_band[i - 1])
+        up_band[i] = float(np.maximum(up_band[i], up_band[i - 1]))
     if close_arr[i - 1] < dn_band[i - 1]:
-        dn_band[i] = min(dn_band[i], dn_band[i - 1])
+        dn_band[i] = float(np.minimum(dn_band[i], dn_band[i - 1]))
     if close_arr[i] > dn_band[i - 1]:
         trend_dir[i] = 1
     elif close_arr[i] < up_band[i - 1]:
@@ -148,7 +149,6 @@ if journal:
     msg = f"LATEST SIGNAL ({last['time']} EAT): **{last['side']} AI** [{last['result']}] | Conf: **{last['conf']}%** | Entry: **${last['entry']}** | SL: **${last['sl']}** | TP: **${last['tp']}**"
     st.success(msg) if last["side"] == "BUY" else st.error(msg)
 
-# Plot Candlesticks + Simple AI Green/Red Trend Line + Order Flow Markers
 fig = go.Figure()
 fig.add_trace(go.Candlestick(x=df.index, open=df["Open"], high=df["High"], low=df["Low"], close=df["Close"], name=symbol))
 
